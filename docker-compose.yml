@@ -7,13 +7,13 @@ services:
     restart: unless-stopped
 
     ports:
-      - "127.0.0.1:3000:3000"
+      - "127.0.0.1:${HOST_PORT}:3000"
 
     environment:
       PORT: 3000
       OUTPUT_DIR: /data/images
-      PUBLIC_BASE_URL: https://template2.marcohuber-web.site/images
-      ADMIN_TOKEN: BtW6IXaBrOCt4vCC^iTv#9$&epfWLQ6pKrt&ZV3$1e
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL}
+      ADMIN_TOKEN: ${ADMIN_TOKEN}
 
     volumes:
-      - /var/www/vhosts/template2.marcohuber-web.site/httpdocs/images:/data/images
+      - ${HOST_IMAGES_PATH}:/data/images
