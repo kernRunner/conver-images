@@ -8,7 +8,7 @@ import crypto from "node:crypto";
 // ---- config ----
 const OUTPUT_DIR = process.env.OUTPUT_DIR || "/data/images";
 
-const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL || "https://https://template2.marcohuber-web.site/images";
+const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL || "https://template2.marcohuber-web.site/images";
 
 const OUTPUTS = ["webp", "avif"];
 const WEBP_QUALITY = 78;

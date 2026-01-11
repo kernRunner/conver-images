@@ -6,15 +6,32 @@ services:
     build: .
     restart: unless-stopped
 
-    ports:
-      - "3010:3000"
+    # IMPORTANT: don't publish 3010 anymore (Caddy will handle 443)
+    expose:
+      - "3000"
 
     environment:
       PORT: 3000
       OUTPUT_DIR: /data/images
-      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL}
-      ADMIN_TOKEN: ${ADMIN_TOKEN}
+      PUBLIC_BASE_URL: https://img-api.marcohuber-web.site/images
+      ADMIN_TOKEN: "your#token#here"
 
     volumes:
-      - /var/www/vhosts/template2.marcohuber-web.site/httpdocs/images:/data/images
+      - /srv/image-service/images:/data/images
 
+    networks:
+      - caddy
+
+    labels:
+      # domain
+      caddy: img-api.marcohuber-web.site
+
+      # reverse proxy to the container port
+      caddy.reverse_proxy: "{{upstreams 3000}}"
+
+      # upload size limit
+      caddy.request_body: "max_size 30MB"
+
+networks:
+  caddy:
+    external: true
