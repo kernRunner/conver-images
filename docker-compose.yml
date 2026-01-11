@@ -16,4 +16,5 @@ services:
       ADMIN_TOKEN: ${ADMIN_TOKEN}
 
     volumes:
-      - ${HOST_IMAGES_PATH}:/data/images
+      - /var/www/vhosts/template2.marcohuber-web.site/httpdocs/images:/data/images
+
