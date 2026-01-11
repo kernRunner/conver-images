@@ -1,0 +1,19 @@
+version: "3.9"
+
+services:
+  image-service:
+    container_name: image-service
+    build: .
+    restart: unless-stopped
+
+    ports:
+      - "127.0.0.1:3000:3000"
+
+    environment:
+      PORT: 3000
+      OUTPUT_DIR: /data/images
+      PUBLIC_BASE_URL: https://template2.marcohuber-web.site/images
+      ADMIN_TOKEN: BtW6IXaBrOCt4vCC^iTv#9$&epfWLQ6pKrt&ZV3$1e
+
+    volumes:
+      - /var/www/vhosts/template2.marcohuber-web.site/httpdocs/images:/data/images

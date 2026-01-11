@@ -1,0 +1,28 @@
+# Node / npm
+node_modules/
+npm-debug.log*
+yarn-error.log*
+
+# Environment / secrets
+.env
+.env.*
+
+# Docker
+.dockerignore
+
+# Local test output (DO NOT COMMIT)
+data/
+out-images/
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+
+# Logs
+logs/
+*.log
