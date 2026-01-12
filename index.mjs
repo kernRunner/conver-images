@@ -21,6 +21,20 @@ const MAX_HEIGHT = 2000;
 
 const app = express();
 
+const ADMIN_TOKEN = process.env.ADMIN_TOKEN || "";
+
+app.use((req, res, next) => {
+  // allow public endpoints
+  if (req.path === "/health" || req.path.startsWith("/images")) return next();
+
+  // protect everything else (including /upload)
+  const token = req.header("x-admin-token");
+  if (!ADMIN_TOKEN || token !== ADMIN_TOKEN) {
+    return res.status(401).json({ error: "unauthorized" });
+  }
+  next();
+});
+
 // serve converted images (useful for local testing)
 app.use("/images", express.static(OUTPUT_DIR));
 

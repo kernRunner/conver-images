@@ -14,7 +14,7 @@ services:
       PORT: 3000
       OUTPUT_DIR: /data/images
       PUBLIC_BASE_URL: https://img-api.marcohuber-web.site/images
-      ADMIN_TOKEN: "your#token#here"
+      ADMIN_TOKEN: ${ADMIN_TOKEN}
 
     volumes:
       - /srv/image-service/images:/data/images
