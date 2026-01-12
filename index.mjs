@@ -8,7 +8,7 @@ import crypto from "node:crypto";
 // ---- config ----
 const OUTPUT_DIR = process.env.OUTPUT_DIR || "/data/images";
 
-const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL || " https://img-api.marcohuber-web.site/images";
+const PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || "https://img-api.marcohuber-web.site/images").replace(/\/+$/, "");
 
 const OUTPUTS = ["webp", "avif"];
 const WEBP_QUALITY = 78;
@@ -73,9 +73,21 @@ app.post("/upload", upload.single("image"), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: "No file uploaded (field name: image)" });
 
-    const folder = (req.body.folder || "").toString().replace(/^\/+|\/+$/g, "");
+    let folder = "";
+    try {
+      folder = sanitizeFolder(req.body.folder);
+    } catch {
+      return res.status(400).json({ error: "Invalid folder" });
+    }
+
     const outDir = path.join(OUTPUT_DIR, folder);
     await ensureDir(outDir);
+    const resolvedBase = path.resolve(OUTPUT_DIR);
+    const resolvedOut = path.resolve(outDir);
+    if (!resolvedOut.startsWith(resolvedBase + path.sep) && resolvedOut !== resolvedBase) {
+      return res.status(400).json({ error: "Invalid folder" });
+    }
+
 
     const baseName = makeSafeBaseName(req.file.originalname);
 
@@ -94,14 +106,8 @@ app.post("/upload", upload.single("image"), async (req, res) => {
       const outPath = path.join(outDir, `${baseName}.${ext}`);
       await pipeline(base.clone(), ext).toFile(outPath);
 
-      const urlPath = [PUBLIC_BASE_URL, folder, `${baseName}.${ext}`]
-        .filter(Boolean)
-        .join("/")
-        .replace(/\/+/g, "/")
-        .replace("https:/", "https://")
-        .replace("http:/", "http://"); // allows local http too
-
-      results[ext] = urlPath;
+      const url = `${PUBLIC_BASE_URL}${folder ? `/${folder}` : ""}/${baseName}.${ext}`;
+      results[ext] = url;
     }
 
     return res.json({ ok: true, folder, files: results });
@@ -110,6 +116,28 @@ app.post("/upload", upload.single("image"), async (req, res) => {
     return res.status(500).json({ error: "Conversion failed" });
   }
 });
+
+function sanitizeFolder(input) {
+  const raw = (input || "").toString().trim();
+
+  if (!raw) return ""; // allow root
+
+  // normalize slashes and remove leading/trailing slashes
+  const cleaned = raw.replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
+
+  // reject traversal or absolute-ish paths
+  if (cleaned.includes("..") || cleaned.startsWith(".") || cleaned.includes("\0")) {
+    throw new Error("Invalid folder");
+  }
+
+  // allow only safe characters per segment: a-z A-Z 0-9 _ - /
+  if (!/^[a-zA-Z0-9/_-]+$/.test(cleaned)) {
+    throw new Error("Invalid folder");
+  }
+
+  return cleaned;
+}
+
 
 app.get("/health", (_req, res) => res.send("ok"));
 
