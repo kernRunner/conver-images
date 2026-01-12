@@ -88,12 +88,14 @@ app.get("/health", (_req, res) => res.send("ok"));
  *   <base>.webp
  *   <base>.avif
  */
-app.post("/convert", upload.array("images", 20), async (req, res) => {
+app.post("/convert", upload.any(), async (req, res) => {
   try {
-    const files = req.files; // array
-    if (!files || files.length === 0) {
-      return res.status(400).json({ error: "No files uploaded (field name: images)" });
-    }
+    const files = (req.files ?? []).filter((f) =>
+      f.fieldname === "image" ||
+      f.fieldname === "images" ||
+      f.fieldname === "images[]" ||
+      f.fieldname.startsWith("images[")
+    );
 
     const archive = archiver("zip", { zlib: { level: 9 } });
     archive.on("error", (err) => {
