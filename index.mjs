@@ -117,9 +117,6 @@ const port = process.env.PORT || 3000;
 app.listen(port, () => console.log(`Image service running on :${port}`));
 
 
-import fs from "node:fs/promises";
-import path from "node:path";
-
 app.get("/admin/images", async (req, res) => {
   const token = req.header("x-admin-token");
   if (token !== process.env.ADMIN_TOKEN) {
