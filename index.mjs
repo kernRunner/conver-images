@@ -37,7 +37,10 @@ const MAX_HEIGHT = 2000;
 // upload in memory
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 25 * 1024 * 1024 }, // 25MB
+  limits: {
+    fileSize: 25 * 1024 * 1024, // 25MB per file
+    files: 20,                  // max 20 files per request
+  },
 });
 
 function pipeline(img, ext) {
@@ -85,29 +88,12 @@ app.get("/health", (_req, res) => res.send("ok"));
  *   <base>.webp
  *   <base>.avif
  */
-app.post("/convert", upload.single("image"), async (req, res) => {
+app.post("/convert", upload.array("images", 20), async (req, res) => {
   try {
-    if (!req.file) return res.status(400).json({ error: "No file uploaded (field name: image)" });
-
-    const baseName = makeBaseName(req.body?.name || req.file.originalname);
-
-    const base = sharp(req.file.buffer, { failOn: "none" })
-      .rotate()
-      .resize({
-        width: MAX_WIDTH,
-        height: MAX_HEIGHT,
-        fit: "inside",
-        withoutEnlargement: true,
-      });
-
-    // convert to buffers (no disk)
-    const buffers = {};
-    for (const ext of OUTPUTS) {
-      buffers[ext] = await pipeline(base.clone(), ext).toBuffer();
+    const files = req.files; // array
+    if (!files || files.length === 0) {
+      return res.status(400).json({ error: "No files uploaded (field name: images)" });
     }
-
-    res.setHeader("Content-Type", "application/zip");
-    res.setHeader("Content-Disposition", `attachment; filename="${baseName}.zip"`);
 
     const archive = archiver("zip", { zlib: { level: 9 } });
     archive.on("error", (err) => {
@@ -116,9 +102,37 @@ app.post("/convert", upload.single("image"), async (req, res) => {
       else res.end();
     });
 
+    const batchName = makeBaseName(req.body?.name || "images");
+
+    res.setHeader("Content-Type", "application/zip");
+    res.setHeader("Content-Disposition", `attachment; filename="${batchName}.zip"`);
+
     archive.pipe(res);
-    archive.append(buffers.webp, { name: `${baseName}.webp` });
-    archive.append(buffers.avif, { name: `${baseName}.avif` });
+
+    // IMPORTANT: avoid converting too many in parallel (sharp is CPU heavy)
+    // Run sequentially (safest) or do a small concurrency limit.
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+
+      const baseName = makeBaseName(file.originalname);
+      const numbered = files.length > 1 ? `${baseName}-${i + 1}` : baseName;
+
+      const base = sharp(file.buffer, { failOn: "none" })
+        .rotate()
+        .resize({
+          width: MAX_WIDTH,
+          height: MAX_HEIGHT,
+          fit: "inside",
+          withoutEnlargement: true,
+        });
+
+      const webpBuf = await pipeline(base.clone(), "webp").toBuffer();
+      const avifBuf = await pipeline(base.clone(), "avif").toBuffer();
+
+      archive.append(webpBuf, { name: `${numbered}.webp` });
+      archive.append(avifBuf, { name: `${numbered}.avif` });
+    }
+
     await archive.finalize();
   } catch (e) {
     console.error(e);
