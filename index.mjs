@@ -1,30 +1,19 @@
 import express from "express";
 import multer from "multer";
+import path from "node:path";
+import fs from "node:fs/promises";
 import sharp from "sharp";
 import crypto from "node:crypto";
-import archiver from "archiver";
 
 const app = express();
 
-// ---- tenant auth ----
-const TENANTS_JSON = process.env.TENANTS_JSON || "{}";
-let TENANTS = {};
-try {
-  TENANTS = JSON.parse(TENANTS_JSON);
-} catch {
-  console.error("❌ TENANTS_JSON is not valid JSON");
-  process.exit(1);
-}
+// ---- config ----
+const OUTPUT_DIR = process.env.OUTPUT_DIR || "/data/images";
+const PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || "https://img-api.marcohuber-web.site/images")
+  .replace(/\/+$/, "");
 
-function getTenantFromApiKey(apiKey) {
-  const entry = TENANTS[apiKey];
-  if (!entry) return null;
-  if (typeof entry === "string") return entry;
-  if (typeof entry === "object" && typeof entry.tenant === "string") return entry.tenant;
-  return null;
-}
+const ADMIN_TOKEN = process.env.ADMIN_TOKEN || "";
 
-// ---- image settings ----
 const OUTPUTS = ["webp", "avif"];
 const WEBP_QUALITY = 78;
 const AVIF_QUALITY = 40;
@@ -34,14 +23,31 @@ const AVIF_EFFORT = 8;
 const MAX_WIDTH = 3000;
 const MAX_HEIGHT = 2000;
 
+// ---- auth middleware ----
+app.use((req, res, next) => {
+  // public endpoints
+  if (req.path === "/health" || req.path.startsWith("/images")) return next();
+
+  // protect everything else (including /upload)
+  const token = req.header("x-admin-token");
+  if (!ADMIN_TOKEN || token !== ADMIN_TOKEN) {
+    return res.status(401).json({ ok: false, error: "unauthorized" });
+  }
+  next();
+});
+
+// serve converted images
+app.use("/images", express.static(OUTPUT_DIR));
+
 // upload in memory
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: {
-    fileSize: 25 * 1024 * 1024, // 25MB per file
-    files: 20,                  // max 20 files per request
-  },
+  limits: { fileSize: 25 * 1024 * 1024 }, // 25MB
 });
+
+async function ensureDir(dir) {
+  await fs.mkdir(dir, { recursive: true });
+}
 
 function pipeline(img, ext) {
   if (ext === "webp") {
@@ -53,94 +59,86 @@ function pipeline(img, ext) {
   throw new Error(`Unsupported output: ${ext}`);
 }
 
-function makeBaseName(originalName = "image") {
-  const safe = originalName
+function makeSafeBaseName(originalName) {
+  const name = (originalName || "image")
     .toLowerCase()
     .replace(/\s+/g, "-")
     .replace(/[^a-z0-9-_.]/g, "");
-  const base = safe.replace(/\.[^.]+$/, "") || "image";
+
+  const base = name.replace(path.extname(name), "") || "image";
   const id = crypto.randomBytes(6).toString("hex");
   return `${base}-${id}`;
 }
 
-// ---- auth middleware ----
-app.use((req, res, next) => {
-  if (req.path === "/health") return next();
+function sanitizeFolder(input) {
+  const raw = (input || "").toString().trim();
+  if (!raw) return "";
 
-  const apiKey = req.header("x-api-key");
-  const tenant = getTenantFromApiKey(apiKey);
+  const cleaned = raw.replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
 
-  if (!tenant) return res.status(401).json({ error: "unauthorized" });
+  // block traversal
+  if (cleaned.includes("..") || cleaned.startsWith(".") || cleaned.includes("\0")) {
+    throw new Error("Invalid folder");
+  }
 
-  req.tenant = tenant; // not strictly needed, but useful for logging later
-  next();
+  // allow only safe chars
+  if (!/^[a-zA-Z0-9/_-]+$/.test(cleaned)) {
+    throw new Error("Invalid folder");
+  }
+
+  return cleaned;
+}
+
+app.post("/upload", upload.single("image"), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ ok: false, error: "No file uploaded (field: image)" });
+
+    let folder = "";
+    try {
+      folder = sanitizeFolder(req.body.folder);
+    } catch {
+      return res.status(400).json({ ok: false, error: "Invalid folder" });
+    }
+
+    const outDir = path.join(OUTPUT_DIR, folder);
+    await ensureDir(outDir);
+
+    // extra safety: ensure outDir is inside OUTPUT_DIR
+    const resolvedBase = path.resolve(OUTPUT_DIR);
+    const resolvedOut = path.resolve(outDir);
+    if (!resolvedOut.startsWith(resolvedBase + path.sep) && resolvedOut !== resolvedBase) {
+      return res.status(400).json({ ok: false, error: "Invalid folder" });
+    }
+
+    const baseName = makeSafeBaseName(req.file.originalname);
+
+    const base = sharp(req.file.buffer, { failOn: "none" })
+      .rotate()
+      .resize({
+        width: MAX_WIDTH,
+        height: MAX_HEIGHT,
+        fit: "inside",
+        withoutEnlargement: true,
+      });
+
+    const files = {};
+
+    for (const ext of OUTPUTS) {
+      const outPath = path.join(outDir, `${baseName}.${ext}`);
+      await pipeline(base.clone(), ext).toFile(outPath);
+
+      const url = `${PUBLIC_BASE_URL}${folder ? `/${folder}` : ""}/${baseName}.${ext}`;
+      files[ext] = url;
+    }
+
+    return res.json({ ok: true, folder, files });
+  } catch (e) {
+    console.error(e);
+    return res.status(500).json({ ok: false, error: "Conversion failed" });
+  }
 });
 
 app.get("/health", (_req, res) => res.send("ok"));
 
-/**
- * POST /convert
- * multipart/form-data:
- *   - image: file
- *   - name: optional base name (without ext)
- *
- * response: application/zip containing:
- *   <base>.webp
- *   <base>.avif
- */
-app.post("/convert", upload.any(), async (req, res) => {
-  try {
-    const files = (req.files ?? []).filter((f) =>
-      f.fieldname === "image" ||
-      f.fieldname === "images" ||
-      f.fieldname === "images[]" ||
-      f.fieldname.startsWith("images[")
-    );
-
-    const archive = archiver("zip", { zlib: { level: 9 } });
-    archive.on("error", (err) => {
-      console.error("ZIP error:", err);
-      if (!res.headersSent) res.status(500).end("zip error");
-      else res.end();
-    });
-
-    const batchName = makeBaseName(req.body?.name || "images");
-
-    res.setHeader("Content-Type", "application/zip");
-    res.setHeader("Content-Disposition", `attachment; filename="${batchName}.zip"`);
-
-    archive.pipe(res);
-
-    // IMPORTANT: avoid converting too many in parallel (sharp is CPU heavy)
-    // Run sequentially (safest) or do a small concurrency limit.
-    for (let i = 0; i < files.length; i++) {
-      const file = files[i];
-
-      const baseName = makeBaseName(file.originalname);
-      const numbered = files.length > 1 ? `${baseName}-${i + 1}` : baseName;
-
-      const base = sharp(file.buffer, { failOn: "none" })
-        .rotate()
-        .resize({
-          width: MAX_WIDTH,
-          height: MAX_HEIGHT,
-          fit: "inside",
-          withoutEnlargement: true,
-        });
-
-      const webpBuf = await pipeline(base.clone(), "webp").toBuffer();
-      const avifBuf = await pipeline(base.clone(), "avif").toBuffer();
-
-      archive.append(webpBuf, { name: `${numbered}.webp` });
-      archive.append(avifBuf, { name: `${numbered}.avif` });
-    }
-
-    await archive.finalize();
-  } catch (e) {
-    console.error(e);
-    return res.status(500).json({ error: "Conversion failed" });
-  }
-});
-
 const port = process.env.PORT || 3000;
-app.listen(port, () => console.log(`Converter running on :${port}`));
+app.listen(port, () => console.log(`Image service running on :${port}`));
