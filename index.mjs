@@ -8,7 +8,7 @@ import crypto from "node:crypto";
 // ---- config ----
 const OUTPUT_DIR = process.env.OUTPUT_DIR || "/data/images";
 
-const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL || "https://template2.marcohuber-web.site/images";
+const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL || " https://img-api.marcohuber-web.site/images";
 
 const OUTPUTS = ["webp", "avif"];
 const WEBP_QUALITY = 78;
@@ -115,3 +115,30 @@ app.get("/health", (_req, res) => res.send("ok"));
 
 const port = process.env.PORT || 3000;
 app.listen(port, () => console.log(`Image service running on :${port}`));
+
+
+import fs from "node:fs/promises";
+import path from "node:path";
+
+app.get("/admin/images", async (req, res) => {
+  const token = req.header("x-admin-token");
+  if (token !== process.env.ADMIN_TOKEN) {
+    return res.status(401).json({ error: "unauthorized" });
+  }
+
+  async function walk(dir, base = "") {
+    const entries = await fs.readdir(dir, { withFileTypes: true });
+    let files = [];
+    for (const e of entries) {
+      if (e.isDirectory()) {
+        files.push(...await walk(path.join(dir, e.name), `${base}${e.name}/`));
+      } else {
+        files.push(`${base}${e.name}`);
+      }
+    }
+    return files;
+  }
+
+  const files = await walk(OUTPUT_DIR);
+  res.json({ files });
+});
