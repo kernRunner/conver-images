@@ -2,6 +2,7 @@
   "name": "image-service",
   "type": "module",
   "dependencies": {
+    "archiver": "^6.0.1",
     "express": "^4.19.2",
     "multer": "^1.4.5-lts.1",
     "sharp": "^0.33.5"
