@@ -2,7 +2,6 @@ import express from "express";
 import multer from "multer";
 import sharp from "sharp";
 import crypto from "node:crypto";
-import archiver from "archiver";
 
 const app = express();
 
@@ -24,34 +23,41 @@ function getTenantFromApiKey(apiKey) {
   return null;
 }
 
-// ---- image settings ----
-const OUTPUTS = ["webp", "avif"];
-const WEBP_QUALITY = 78;
-const AVIF_QUALITY = 40;
-const WEBP_EFFORT = 6;
-const AVIF_EFFORT = 8;
+// ---- image settings (tuned faster) ----
+const WEBP_QUALITY = Number(process.env.WEBP_QUALITY ?? 78);
+const AVIF_QUALITY = Number(process.env.AVIF_QUALITY ?? 40);
 
-const MAX_WIDTH = 3000;
-const MAX_HEIGHT = 2000;
+// ↓ effort is the big speed knob
+const WEBP_EFFORT = Number(process.env.WEBP_EFFORT ?? 4); // was 6
+const AVIF_EFFORT = Number(process.env.AVIF_EFFORT ?? 4); // was 8
 
-// upload in memory
+// you can also lower max size to reduce CPU (optional)
+const MAX_WIDTH = Number(process.env.MAX_WIDTH ?? 2400);  // was 3000
+const MAX_HEIGHT = Number(process.env.MAX_HEIGHT ?? 1600); // was 2000
+
+// upload in memory (single file)
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: {
-    fileSize: 25 * 1024 * 1024, // 25MB per file
-    files: 20,                  // max 20 files per request
+    fileSize: 15 * 1024 * 1024, // smaller limit encouraged
+    files: 1,
   },
 });
 
-function pipeline(img, ext) {
-  if (ext === "webp") {
-    return img.webp({ quality: WEBP_QUALITY, effort: WEBP_EFFORT, smartSubsample: true });
-  }
-  if (ext === "avif") {
-    return img.avif({ quality: AVIF_QUALITY, effort: AVIF_EFFORT });
-  }
-  throw new Error(`Unsupported output: ${ext}`);
-}
+// ---- auth middleware ----
+app.use((req, res, next) => {
+  if (req.path === "/health") return next();
+
+  const apiKey = req.header("x-api-key");
+  const tenant = getTenantFromApiKey(apiKey);
+
+  if (!tenant) return res.status(401).json({ error: "unauthorized" });
+
+  req.tenant = tenant;
+  next();
+});
+
+app.get("/health", (_req, res) => res.send("ok"));
 
 function makeBaseName(originalName = "image") {
   const safe = originalName
@@ -63,20 +69,27 @@ function makeBaseName(originalName = "image") {
   return `${base}-${id}`;
 }
 
-// ---- auth middleware ----
-app.use((req, res, next) => {
-  if (req.path === "/health") return next();
+function buildSharpBase(buffer) {
+  return sharp(buffer, { failOn: "none" })
+    .rotate()
+    .resize({
+      width: MAX_WIDTH,
+      height: MAX_HEIGHT,
+      fit: "inside",
+      withoutEnlargement: true,
+    });
+}
 
-  const apiKey = req.header("x-api-key");
-  const tenant = getTenantFromApiKey(apiKey);
-
-  if (!tenant) return res.status(401).json({ error: "unauthorized" });
-
-  req.tenant = tenant; // not strictly needed, but useful for logging later
-  next();
-});
-
-app.get("/health", (_req, res) => res.send("ok"));
+// helper to write one multipart part
+function writePart(res, boundary, headersObj, bodyBuf) {
+  res.write(`--${boundary}\r\n`);
+  for (const [k, v] of Object.entries(headersObj)) {
+    res.write(`${k}: ${v}\r\n`);
+  }
+  res.write(`\r\n`);
+  res.write(bodyBuf);
+  res.write(`\r\n`);
+}
 
 /**
  * POST /convert
@@ -84,58 +97,50 @@ app.get("/health", (_req, res) => res.send("ok"));
  *   - image: file
  *   - name: optional base name (without ext)
  *
- * response: application/zip containing:
- *   <base>.webp
- *   <base>.avif
+ * response: multipart/mixed with:
+ *   part 1: image/webp
+ *   part 2: image/avif
  */
-app.post("/convert", upload.any(), async (req, res) => {
+app.post("/convert", upload.single("image"), async (req, res) => {
   try {
-    const files = (req.files ?? []).filter((f) =>
-      f.fieldname === "image" ||
-      f.fieldname === "images" ||
-      f.fieldname === "images[]" ||
-      f.fieldname.startsWith("images[")
-    );
+    if (!req.file) return res.status(400).json({ error: "No file uploaded (field name: image)" });
 
-    const archive = archiver("zip", { zlib: { level: 9 } });
-    archive.on("error", (err) => {
-      console.error("ZIP error:", err);
-      if (!res.headersSent) res.status(500).end("zip error");
-      else res.end();
-    });
+    const baseName = makeBaseName(req.body?.name || req.file.originalname);
 
-    const batchName = makeBaseName(req.body?.name || "images");
+    const base = buildSharpBase(req.file.buffer);
 
-    res.setHeader("Content-Type", "application/zip");
-    res.setHeader("Content-Disposition", `attachment; filename="${batchName}.zip"`);
+    // convert
+    const webpBuf = await base.clone().webp({
+      quality: WEBP_QUALITY,
+      effort: WEBP_EFFORT,
+      smartSubsample: true,
+    }).toBuffer();
 
-    archive.pipe(res);
+    const avifBuf = await base.clone().avif({
+      quality: AVIF_QUALITY,
+      effort: AVIF_EFFORT,
+    }).toBuffer();
 
-    // IMPORTANT: avoid converting too many in parallel (sharp is CPU heavy)
-    // Run sequentially (safest) or do a small concurrency limit.
-    for (let i = 0; i < files.length; i++) {
-      const file = files[i];
+    // multipart response
+    const boundary = "img_" + crypto.randomBytes(12).toString("hex");
 
-      const baseName = makeBaseName(file.originalname);
-      const numbered = files.length > 1 ? `${baseName}-${i + 1}` : baseName;
+    res.status(200);
+    res.setHeader("Content-Type", `multipart/mixed; boundary=${boundary}`);
+    res.setHeader("Cache-Control", "no-store");
 
-      const base = sharp(file.buffer, { failOn: "none" })
-        .rotate()
-        .resize({
-          width: MAX_WIDTH,
-          height: MAX_HEIGHT,
-          fit: "inside",
-          withoutEnlargement: true,
-        });
+    writePart(res, boundary, {
+      "Content-Type": "image/webp",
+      "Content-Disposition": `attachment; filename="${baseName}.webp"`,
+      "X-File": `${baseName}.webp`,
+    }, webpBuf);
 
-      const webpBuf = await pipeline(base.clone(), "webp").toBuffer();
-      const avifBuf = await pipeline(base.clone(), "avif").toBuffer();
+    writePart(res, boundary, {
+      "Content-Type": "image/avif",
+      "Content-Disposition": `attachment; filename="${baseName}.avif"`,
+      "X-File": `${baseName}.avif`,
+    }, avifBuf);
 
-      archive.append(webpBuf, { name: `${numbered}.webp` });
-      archive.append(avifBuf, { name: `${numbered}.avif` });
-    }
-
-    await archive.finalize();
+    res.end(`--${boundary}--\r\n`);
   } catch (e) {
     console.error(e);
     return res.status(500).json({ error: "Conversion failed" });
