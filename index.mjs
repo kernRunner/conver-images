@@ -19,19 +19,16 @@ function getTenantFromApiKey(apiKey) {
   const entry = TENANTS[apiKey];
   if (!entry) return null;
   if (typeof entry === "string") return entry;
-  if (typeof entry === "object" && typeof entry.tenant === "string")
-    return entry.tenant;
+  if (typeof entry === "object" && typeof entry.tenant === "string") return entry.tenant;
   return null;
 }
 
 // ---- image settings ----
 const WEBP_QUALITY = Number(process.env.WEBP_QUALITY ?? 78);
 const AVIF_QUALITY = Number(process.env.AVIF_QUALITY ?? 40);
-
 const WEBP_EFFORT = Number(process.env.WEBP_EFFORT ?? 4);
 const AVIF_EFFORT = Number(process.env.AVIF_EFFORT ?? 4);
 
-// Base max bounds (we'll pick portrait/landscape bounds dynamically too)
 const LANDSCAPE_MAX_W = Number(process.env.MAX_WIDTH ?? 2400);
 const LANDSCAPE_MAX_H = Number(process.env.MAX_HEIGHT ?? 1600);
 const PORTRAIT_MAX_W = Number(process.env.PORTRAIT_MAX_W ?? 1600);
@@ -71,28 +68,53 @@ function makeBaseName(originalName = "image") {
   return `${base}-${id}`;
 }
 
+function isSwapOrientation(o) {
+  // 5,6,7,8 mean rotated 90/270 (dimensions swap)
+  return o === 5 || o === 6 || o === 7 || o === 8;
+}
+
 /**
- * IMPORTANT:
- * - We do NOT auto-rotate anymore (no .rotate()) because for some sources
- *   the pixels are already rotated and the EXIF orientation would cause a "double rotate".
- * - We also strip/reset orientation to 1 so consumers won't rotate it again.
- *
- * This keeps "what you see in the uploaded pixels" as-is.
+ * Heuristic:
+ * - If EXIF says "swap dims" (5-8) but the pixels are currently landscape (w>h),
+ *   we should rotate (bake) to get a portrait image.
+ * - If EXIF says swap dims but pixels are already portrait (h>=w),
+ *   skip rotate to avoid double-rotation, and just reset orientation to 1.
+ * - For 3/4 (180 flips), we also only apply if orientation != 1 AND we assume pixels likely uncorrected.
+ *   If you ever see "upside down" issues, we can refine similarly.
  */
 async function buildSharpBase(buffer) {
   const meta = await sharp(buffer, { failOn: "none" }).metadata();
 
+  const o = meta.orientation ?? 1;
   const w = meta.width ?? 1;
   const h = meta.height ?? 1;
-  const isPortrait = h > w;
 
-  const maxW = isPortrait ? PORTRAIT_MAX_W : LANDSCAPE_MAX_W;
-  const maxH = isPortrait ? PORTRAIT_MAX_H : LANDSCAPE_MAX_H;
+  const swap = isSwapOrientation(o);
+  const shouldRotate =
+    o !== 1 &&
+    (
+      // 90/270-type orientations: rotate only if pixels look un-rotated (landscape)
+      (swap && w > h) ||
+      // 180-type orientations: apply (usually safe). If this causes double-flip for some sources,
+      // we can add a similar heuristic.
+      (!swap && (o === 3 || o === 4))
+    );
 
-  return sharp(buffer, { failOn: "none" })
-    // do NOT apply EXIF orientation to pixels:
-    // .rotate()
-    // reset orientation so output won't be rotated by viewers:
+  const isPortraitAfter =
+    swap ? (shouldRotate ? true : h > w) : h > w;
+
+  const maxW = isPortraitAfter ? PORTRAIT_MAX_W : LANDSCAPE_MAX_W;
+  const maxH = isPortraitAfter ? PORTRAIT_MAX_H : LANDSCAPE_MAX_H;
+
+  let img = sharp(buffer, { failOn: "none" });
+
+  if (shouldRotate) {
+    // bake EXIF orientation into pixels (fixes phone portrait -> landscape issue)
+    img = img.rotate();
+  }
+
+  return img
+    // always reset orientation so outputs never depend on EXIF orientation
     .withMetadata({ orientation: 1 })
     .resize({
       width: maxW,
@@ -113,43 +135,25 @@ function writePart(res, boundary, headersObj, bodyBuf) {
   res.write(`\r\n`);
 }
 
-/**
- * POST /convert
- * multipart/form-data:
- *   - image: file
- *   - name: optional base name (without ext)
- *
- * response: multipart/mixed with:
- *   part 1: image/webp
- *   part 2: image/avif
- */
 app.post("/convert", upload.single("image"), async (req, res) => {
   try {
-    if (!req.file)
-      return res
-        .status(400)
-        .json({ error: "No file uploaded (field name: image)" });
+    if (!req.file) {
+      return res.status(400).json({ error: "No file uploaded (field name: image)" });
+    }
 
     const baseName = makeBaseName(req.body?.name || req.file.originalname);
-
     const base = await buildSharpBase(req.file.buffer);
 
-    const webpBuf = await base
-      .clone()
-      .webp({
-        quality: WEBP_QUALITY,
-        effort: WEBP_EFFORT,
-        smartSubsample: true,
-      })
-      .toBuffer();
+    const webpBuf = await base.clone().webp({
+      quality: WEBP_QUALITY,
+      effort: WEBP_EFFORT,
+      smartSubsample: true,
+    }).toBuffer();
 
-    const avifBuf = await base
-      .clone()
-      .avif({
-        quality: AVIF_QUALITY,
-        effort: AVIF_EFFORT,
-      })
-      .toBuffer();
+    const avifBuf = await base.clone().avif({
+      quality: AVIF_QUALITY,
+      effort: AVIF_EFFORT,
+    }).toBuffer();
 
     const boundary = "img_" + crypto.randomBytes(12).toString("hex");
 
@@ -157,27 +161,17 @@ app.post("/convert", upload.single("image"), async (req, res) => {
     res.setHeader("Content-Type", `multipart/mixed; boundary=${boundary}`);
     res.setHeader("Cache-Control", "no-store");
 
-    writePart(
-      res,
-      boundary,
-      {
-        "Content-Type": "image/webp",
-        "Content-Disposition": `attachment; filename="${baseName}.webp"`,
-        "X-File": `${baseName}.webp`,
-      },
-      webpBuf,
-    );
+    writePart(res, boundary, {
+      "Content-Type": "image/webp",
+      "Content-Disposition": `attachment; filename="${baseName}.webp"`,
+      "X-File": `${baseName}.webp`,
+    }, webpBuf);
 
-    writePart(
-      res,
-      boundary,
-      {
-        "Content-Type": "image/avif",
-        "Content-Disposition": `attachment; filename="${baseName}.avif"`,
-        "X-File": `${baseName}.avif`,
-      },
-      avifBuf,
-    );
+    writePart(res, boundary, {
+      "Content-Type": "image/avif",
+      "Content-Disposition": `attachment; filename="${baseName}.avif"`,
+      "X-File": `${baseName}.avif`,
+    }, avifBuf);
 
     res.end(`--${boundary}--\r\n`);
   } catch (e) {
