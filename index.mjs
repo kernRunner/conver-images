@@ -70,14 +70,16 @@ function makeBaseName(originalName = "image") {
 }
 
 function buildSharpBase(buffer) {
-  return sharp(buffer, { failOn: "none" })
-    .rotate()
-    .resize({
-      width: MAX_WIDTH,
-      height: MAX_HEIGHT,
+  const img = sharp(buffer, { failOn: "none" }).rotate();
+
+  return img.metadata().then(meta =>
+    img.resize({
+      width: meta.height > meta.width ? 1600 : 2400,
+      height: meta.height > meta.width ? 3200 : 1600,
       fit: "inside",
       withoutEnlargement: true,
-    });
+    })
+  );
 }
 
 // helper to write one multipart part
