@@ -135,7 +135,8 @@ app.post("/convert", upload.single("image"), async (req, res) => {
 
     const baseName = makeBaseName(req.body?.name || req.file.originalname);
 
-    const base = buildSharpBase(req.file.buffer);
+    const base = await buildSharpBase(req.file.buffer);
+
 
     // convert
     const webpBuf = await base.clone().webp({
