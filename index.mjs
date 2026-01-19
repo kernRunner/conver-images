@@ -69,30 +69,44 @@ function makeBaseName(originalName = "image") {
   return `${base}-${id}`;
 }
 
-function buildSharpBase(buffer) {
+// function buildSharpBase(buffer) {
+//   return sharp(buffer, { failOn: "none" })
+//     .rotate()
+//     .resize({
+//       width: MAX_WIDTH,
+//       height: MAX_HEIGHT,
+//       fit: "inside",
+//       withoutEnlargement: true,
+//     });
+// }
+
+
+async function buildSharpBase(buffer) {
+  const meta = await sharp(buffer, { failOn: "none" }).metadata();
+
+  // If EXIF orientation implies rotation, swap width/height for the "display" size
+  const oriented =
+    meta.orientation && meta.orientation >= 5 && meta.orientation <= 8;
+
+  const w = meta.width ?? 1;
+  const h = meta.height ?? 1;
+  const displayW = oriented ? h : w;
+  const displayH = oriented ? w : h;
+
+  const isPortrait = displayH > displayW;
+
+  const maxW = isPortrait ? 1600 : 2400;
+  const maxH = isPortrait ? 3200 : 1600;
+
   return sharp(buffer, { failOn: "none" })
-    .rotate()
+    .rotate() // apply EXIF orientation
     .resize({
-      width: MAX_WIDTH,
-      height: MAX_HEIGHT,
+      width: maxW,
+      height: maxH,
       fit: "inside",
       withoutEnlargement: true,
     });
 }
-
-
-// function buildSharpBase(buffer) {
-//   const img = sharp(buffer, { failOn: "none" }).rotate();
-
-//   return img.metadata().then(meta =>
-//     img.resize({
-//       width: meta.height > meta.width ? 1600 : 2400,
-//       height: meta.height > meta.width ? 3200 : 1600,
-//       fit: "inside",
-//       withoutEnlargement: true,
-//     })
-//   );
-// }
 
 // helper to write one multipart part
 function writePart(res, boundary, headersObj, bodyBuf) {
