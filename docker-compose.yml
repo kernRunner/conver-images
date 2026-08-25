@@ -1,55 +1,90 @@
+name: ${STACK_NAME:-image-converter}
+
+x-json-logging: &json-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
 services:
   image-service:
     container_name: image-service
-    build: .
+
+    build:
+      context: .
+      dockerfile: Dockerfile
+
+    image: ${CONVERTER_IMAGE:-artist-image-converter:latest}
+
     restart: unless-stopped
-    expose:
-      - "3000"
 
     environment:
-      PORT: "3000"
-      TENANTS_JSON: ${TENANTS_JSON}
+      TENANTS_JSON: ${TENANTS_JSON:?set TENANTS_JSON}
 
-      MAX_UPLOAD_BYTES: "${MAX_UPLOAD_BYTES:-33554432}"
-      MAX_PIXELS: "${MAX_PIXELS:-50000000}"
-      MAX_DIMENSION: "${MAX_DIMENSION:-12000}"
+      MAX_UPLOAD_BYTES: ${MAX_UPLOAD_BYTES:-33554432}
+      MAX_PIXELS: ${MAX_PIXELS:-50000000}
+      MAX_DIMENSION: ${MAX_DIMENSION:-12000}
 
-      THUMB_WIDTH: "${THUMB_WIDTH:-400}"
-      MEDIUM_WIDTH: "${MEDIUM_WIDTH:-1200}"
-      LARGE_WIDTH: "${LARGE_WIDTH:-2000}"
+      THUMB_WIDTH: ${THUMB_WIDTH:-400}
+      MEDIUM_WIDTH: ${MEDIUM_WIDTH:-1200}
+      LARGE_WIDTH: ${LARGE_WIDTH:-2000}
 
-      WEBP_QUALITY: "${WEBP_QUALITY:-82}"
-      WEBP_EFFORT: "${WEBP_EFFORT:-4}"
+      WEBP_QUALITY: ${WEBP_QUALITY:-82}
+      WEBP_EFFORT: ${WEBP_EFFORT:-4}
 
-      ENABLE_AVIF: "${ENABLE_AVIF:-false}"
-      AVIF_QUALITY: "${AVIF_QUALITY:-45}"
-      AVIF_EFFORT: "${AVIF_EFFORT:-4}"
+      ENABLE_AVIF: ${ENABLE_AVIF:-false}
+      AVIF_QUALITY: ${AVIF_QUALITY:-45}
+      AVIF_EFFORT: ${AVIF_EFFORT:-4}
 
-      # Start conservatively on the VPS and benchmark before increasing.
-      MAX_ACTIVE_JOBS: "${MAX_ACTIVE_JOBS:-1}"
-      SHARP_CONCURRENCY: "${SHARP_CONCURRENCY:-1}"
-      SHARP_CACHE_MEMORY_MB: "${SHARP_CACHE_MEMORY_MB:-64}"
+      MAX_ACTIVE_JOBS: ${MAX_ACTIVE_JOBS:-1}
+      SHARP_CONCURRENCY: ${SHARP_CONCURRENCY:-1}
+      SHARP_CACHE_MEMORY_MB: ${SHARP_CACHE_MEMORY_MB:-64}
 
-    read_only: true
-    cap_drop:
-      - ALL
-    security_opt:
-      - no-new-privileges:true
-    pids_limit: 128
-    mem_limit: "${CONVERTER_MEMORY_LIMIT:-1g}"
-    cpus: "${CONVERTER_CPU_LIMIT:-2.0}"
-    tmpfs:
-      - /tmp:size=${CONVERTER_TMP_SIZE:-512m},mode=1777
+    expose:
+      - "3000"
 
     networks:
       - caddy
 
     labels:
-      caddy: "${CONVERTER_HOST:-img-api.marcohuber-web.site}"
+      caddy: ${CONVERTER_HOST:?set CONVERTER_HOST}
       caddy.reverse_proxy: "{{upstreams 3000}}"
-      caddy.request_body: "max_size 32MB"
+      caddy_ingress_network: ${CADDY_NETWORK:-caddy}
+
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - wget -qO- http://127.0.0.1:3000/health >/dev/null || exit 1
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+    read_only: true
+
+    tmpfs:
+      - /tmp:size=${CONVERTER_TMP_SIZE:-512m},mode=1777
+
+    cap_drop:
+      - ALL
+
+    security_opt:
+      - no-new-privileges:true
+
+    pids_limit: 256
+
+    deploy:
+      resources:
+        limits:
+          memory: ${CONVERTER_MEMORY_LIMIT:-1g}
+          cpus: "${CONVERTER_CPU_LIMIT:-2.0}"
+
+    stop_grace_period: 15s
+
+    logging: *json-logging
+
 
 networks:
   caddy:
     external: true
-    name: "${CADDY_NETWORK:-caddy}"
+    name: ${CADDY_NETWORK:-caddy}
