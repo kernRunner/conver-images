@@ -60,10 +60,7 @@ services:
       retries: 3
       start_period: 15s
 
-    read_only: true
-
-    tmpfs:
-      - /tmp:size=${CONVERTER_TMP_SIZE:-512m},mode=1777
+        read_only: true
 
     cap_drop:
       - ALL
@@ -73,14 +70,15 @@ services:
 
     pids_limit: 256
 
-    deploy:
-      resources:
-        limits:
-          memory: ${CONVERTER_MEMORY_LIMIT:-1g}
-          cpus: "${CONVERTER_CPU_LIMIT:-2.0}"
+    mem_limit: "${CONVERTER_MEMORY_LIMIT:-1g}"
+
+    cpus: "${CONVERTER_CPU_LIMIT:-2.0}"
+
+    tmpfs:
+      - /tmp:size=${CONVERTER_TMP_SIZE:-512m},mode=1777
 
     stop_grace_period: 15s
-
+    
     logging: *json-logging
 
 
